@@ -6,10 +6,9 @@ use anyhow::Context;
 use rand::Rng;
 use url::Url;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinSet;
 
-use webtransport_generic::{RecvStream, SendStream, Session};
+use webtransport_quinn::{RecvStream, SendStream, Session};
 
 pub fn parse(url: &Url) -> anyhow::Result<(u8, u16)> {
     if url.path() != "/webtransport/devious-baton" {
@@ -55,19 +54,16 @@ pub fn parse(url: &Url) -> anyhow::Result<(u8, u16)> {
 }
 
 // Sends and receives batons until they all reach 0.
-pub async fn run<S>(
-    session: S,
+pub async fn run(
+    session: Session,
     init: Option<u8>, // None if we're the client
     mut count: u16,   // the number of batons
-) -> anyhow::Result<()>
-where
-    S: Session,
-{
+) -> anyhow::Result<()> {
     // Writing the baton to a stream
-    let mut outbound = JoinSet::<anyhow::Result<(u8, Outbound<S::RecvStream>)>>::new();
+    let mut outbound = JoinSet::<anyhow::Result<(u8, Outbound)>>::new();
 
     // Reading the baton from a stream
-    let mut inbound = JoinSet::<anyhow::Result<(u8, Inbound<S::SendStream>)>>::new();
+    let mut inbound = JoinSet::<anyhow::Result<(u8, Inbound)>>::new();
 
     // If we're the server, queue up the initial batons to send.
     if let Some(init) = init {
@@ -176,10 +172,9 @@ where
     Ok(())
 }
 
-async fn recv_baton<R: RecvStream>(mut stream: R) -> anyhow::Result<u8> {
+async fn recv_baton(mut stream: RecvStream) -> anyhow::Result<u8> {
     // Read the entire stream into the buffer
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).await?;
+    let buf = stream.read_to_end(usize::MAX).await?;
 
     // TODO also check that padding varint is correct.
     if buf.len() < 2 {
@@ -190,20 +185,20 @@ async fn recv_baton<R: RecvStream>(mut stream: R) -> anyhow::Result<u8> {
     Ok(baton)
 }
 
-async fn send_baton<S: SendStream>(mut stream: S, baton: u8) -> anyhow::Result<()> {
+async fn send_baton(mut stream: SendStream, baton: u8) -> anyhow::Result<()> {
     let buf = [0, baton];
     stream.write_all(&buf).await?;
 
     Ok(())
 }
 
-enum Inbound<S: SendStream> {
+enum Inbound {
     Uni,
     LocalBi, // we already wrote the baton
-    RemoteBi(S),
+    RemoteBi(SendStream),
 }
 
-impl<S: SendStream> fmt::Debug for Inbound<S> {
+impl fmt::Debug for Inbound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Inbound::Uni => write!(f, "Uni"),
@@ -213,13 +208,13 @@ impl<S: SendStream> fmt::Debug for Inbound<S> {
     }
 }
 
-enum Outbound<R: RecvStream> {
+enum Outbound {
     Uni,
-    LocalBi(R),
+    LocalBi(RecvStream),
     RemoteBi, // we already read the baton
 }
 
-impl<R: RecvStream> fmt::Debug for Outbound<R> {
+impl fmt::Debug for Outbound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Outbound::Uni => write!(f, "Uni"),

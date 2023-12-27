@@ -15,7 +15,7 @@ categories = ["network-programming", "web-programming"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-webtransport-generic = { path = "../webtransport-generic", version = "0.5" }
+webtransport-quinn = { path = "../webtransport-quinn", version = "0.6" }
 
 anyhow = "1"
 rand = "0.8"

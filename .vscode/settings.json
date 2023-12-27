@@ -1,0 +1,5 @@
+{
+    "rust-analyzer.runnableEnv": {
+        "RUSTFLAGS": "--cfg=web_sys_unstable_apis"
+     }
+}
