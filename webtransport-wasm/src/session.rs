@@ -5,11 +5,20 @@ use web_sys::{
     WebTransportSendStream,
 };
 
-use crate::{reader::Reader, RecvStream, SendStream, WebError};
+use crate::{Reader, RecvStream, SendStream, WebError};
 
 #[derive(Clone)]
 pub struct Session {
     inner: web_sys::WebTransport,
+}
+
+impl Session {
+    pub async fn new(url: &str) -> Result<Self, WebError> {
+        let inner = web_sys::WebTransport::new(url)?;
+        JsFuture::from(inner.ready()).await?;
+
+        Ok(Self { inner })
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -19,18 +28,21 @@ impl webtransport_generic::Session for Session {
     type Error = WebError;
 
     async fn accept_uni(&mut self) -> Result<Self::RecvStream, Self::Error> {
-        let mut reader = Reader::new(&self.inner.incoming_unidirectional_streams())?;
+        let mut reader = Reader::new(self.inner.incoming_unidirectional_streams())?;
         let stream: WebTransportReceiveStream = reader.read().await?.expect("closed without error");
-
-        Ok(stream.into())
+        let recv = RecvStream::new(stream)?;
+        Ok(recv)
     }
 
     async fn accept_bi(&mut self) -> Result<(Self::SendStream, Self::RecvStream), Self::Error> {
-        let mut reader = Reader::new(&self.inner.incoming_bidirectional_streams())?;
+        let mut reader = Reader::new(self.inner.incoming_bidirectional_streams())?;
         let stream: WebTransportBidirectionalStream =
             reader.read().await?.expect("closed without error");
 
-        Ok((stream.writable().into(), stream.readable().into()))
+        let send = SendStream::new(stream.writable())?;
+        let recv = RecvStream::new(stream.readable())?;
+
+        Ok((send, recv))
     }
 
     async fn open_bi(&mut self) -> Result<(Self::SendStream, Self::RecvStream), Self::Error> {
@@ -39,7 +51,10 @@ impl webtransport_generic::Session for Session {
                 .await?
                 .dyn_into()?;
 
-        Ok((stream.writable().into(), stream.readable().into()))
+        let send = SendStream::new(stream.writable())?;
+        let recv = RecvStream::new(stream.readable())?;
+
+        Ok((send, recv))
     }
 
     async fn open_uni(&mut self) -> Result<Self::SendStream, Self::Error> {
@@ -48,7 +63,8 @@ impl webtransport_generic::Session for Session {
                 .await?
                 .dyn_into()?;
 
-        Ok(stream.into())
+        let send = SendStream::new(stream)?;
+        Ok(send)
     }
 
     async fn close(&mut self, code: u32, reason: &str) -> Result<(), Self::Error> {

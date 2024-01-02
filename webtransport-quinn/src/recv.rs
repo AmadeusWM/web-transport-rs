@@ -1,6 +1,8 @@
+use std::{io, pin::Pin, slice, task};
+
 use bytes::Bytes;
 
-use crate::{ReadError, ReadExactError, ReadToEndError};
+use crate::SessionError;
 
 /// A stream that can be used to recieve bytes. See [`quinn::RecvStream`].
 #[derive(Debug)]
@@ -62,11 +64,115 @@ impl RecvStream {
 impl webtransport_generic::RecvStream for RecvStream {
     type Error = ReadError;
 
-    async fn read(&mut self, buf: &mut [u8]) -> Result<Option<usize>, Self::Error> {
-        Self::read(self, buf).await
+    async fn read<B: bytes::BufMut>(&mut self, buf: &mut B) -> Result<(), Self::Error> {
+        while buf.has_remaining_mut() {
+            let dst = buf.chunk_mut();
+            let dst = unsafe { slice::from_raw_parts_mut(dst.as_mut_ptr(), dst.len()) };
+
+            match self.read(dst).await? {
+                Some(0) => panic!("read returned 0"),
+                Some(n) => unsafe {
+                    buf.advance_mut(n);
+                },
+                None => break,
+            };
+        }
+
+        Ok(())
     }
 
-    async fn stop(&mut self, code: u32) -> Result<(), Self::Error> {
-        Self::stop(self, code).map_err(|_| ReadError::Closed)
+    async fn read_chunk(&mut self, max: usize) -> Result<Bytes, Self::Error> {
+        Ok(match self.read_chunk(max, true).await? {
+            Some(chunk) => chunk.bytes,
+            None => Bytes::new(),
+        })
+    }
+
+    async fn close(&mut self, code: u32) -> Result<(), Self::Error> {
+        self.stop(code).map_err(|_| ReadError::Closed)
+    }
+}
+
+impl tokio::io::AsyncRead for RecvStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf,
+    ) -> task::Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+/// An error when reading from [`crate::RecvStream`]. Similar to [`quinn::ReadError`].
+#[derive(Clone, thiserror::Error, Debug)]
+pub enum ReadError {
+    #[error("session error: {0}")]
+    SessionError(#[from] SessionError),
+
+    #[error("RESET_STREAM: {0}")]
+    Reset(u32),
+
+    #[error("invalid RESET_STREAM: {0}")]
+    InvalidReset(quinn::VarInt),
+
+    #[error("stream already closed")]
+    Closed,
+
+    #[error("ordered read on unordered stream")]
+    IllegalOrderedRead,
+}
+
+impl From<quinn::ReadError> for ReadError {
+    fn from(value: quinn::ReadError) -> Self {
+        match value {
+            quinn::ReadError::Reset(code) => {
+                match webtransport_proto::error_from_http3(code.into_inner()) {
+                    Some(code) => ReadError::Reset(code),
+                    None => ReadError::InvalidReset(code),
+                }
+            }
+            quinn::ReadError::ConnectionLost(e) => ReadError::SessionError(e.into()),
+            quinn::ReadError::IllegalOrderedRead => ReadError::IllegalOrderedRead,
+            quinn::ReadError::UnknownStream => ReadError::Closed,
+            quinn::ReadError::ZeroRttRejected => unreachable!("0-RTT not supported"),
+        }
+    }
+}
+
+/// An error returned by [`crate::RecvStream::read_exact`]. Similar to [`quinn::ReadExactError`].
+#[derive(Clone, thiserror::Error, Debug)]
+pub enum ReadExactError {
+    #[error("finished early")]
+    FinishedEarly,
+
+    #[error("read error: {0}")]
+    ReadError(#[from] ReadError),
+}
+
+impl From<quinn::ReadExactError> for ReadExactError {
+    fn from(e: quinn::ReadExactError) -> Self {
+        match e {
+            quinn::ReadExactError::FinishedEarly => ReadExactError::FinishedEarly,
+            quinn::ReadExactError::ReadError(e) => ReadExactError::ReadError(e.into()),
+        }
+    }
+}
+
+/// An error returned by [`crate::RecvStream::read_to_end`]. Similar to [`quinn::ReadToEndError`].
+#[derive(Clone, thiserror::Error, Debug)]
+pub enum ReadToEndError {
+    #[error("too long")]
+    TooLong,
+
+    #[error("read error: {0}")]
+    ReadError(#[from] ReadError),
+}
+
+impl From<quinn::ReadToEndError> for ReadToEndError {
+    fn from(e: quinn::ReadToEndError) -> Self {
+        match e {
+            quinn::ReadToEndError::TooLong => ReadToEndError::TooLong,
+            quinn::ReadToEndError::Read(e) => ReadToEndError::ReadError(e.into()),
+        }
     }
 }

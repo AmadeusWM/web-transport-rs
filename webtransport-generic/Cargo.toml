@@ -16,3 +16,8 @@ categories = ["network-programming", "web-programming"]
 
 [dependencies]
 async-trait = "0.1"
+thiserror = "1"
+anyhow = "1"
+bytes = "1"
+tokio = { version = "1", default-features = false }
+trait-variant = "0.1"

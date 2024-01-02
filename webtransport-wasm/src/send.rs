@@ -1,16 +1,24 @@
-use js_sys::Reflect;
+use bytes::Buf;
+use js_sys::{Reflect, Uint8Array};
 use wasm_bindgen_futures::JsFuture;
-use web_sys::WebTransportSendStream;
+use web_sys::{WebTransportSendStream, WritableStreamDefaultWriter};
 
-use crate::{WebError, Writer};
+use crate::WebError;
 
 pub struct SendStream {
-    inner: WebTransportSendStream,
+    writer: WritableStreamDefaultWriter,
 }
 
-impl From<WebTransportSendStream> for SendStream {
-    fn from(inner: WebTransportSendStream) -> Self {
-        Self { inner }
+impl SendStream {
+    pub fn new(stream: WebTransportSendStream) -> Result<Self, WebError> {
+        let writer = stream.get_writer()?;
+        Ok(Self { writer })
+    }
+
+    pub async fn write(&mut self, buf: &[u8]) -> Result<(), WebError> {
+        let data = Uint8Array::from(buf);
+        JsFuture::from(self.writer.write_with_chunk(&data)).await?;
+        Ok(())
     }
 }
 
@@ -18,25 +26,27 @@ impl From<WebTransportSendStream> for SendStream {
 impl webtransport_generic::SendStream for SendStream {
     type Error = WebError;
 
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        let mut writer = Writer::new(&self.inner)?;
-        writer.write(buf).await
-    }
-
-    async fn reset(&mut self, _code: u32) -> Result<(), Self::Error> {
-        // TODO support error codes?
-        JsFuture::from(self.inner.abort()).await?;
+    async fn write<B: Buf>(&mut self, buf: &mut B) -> Result<(), Self::Error> {
+        let chunk = buf.chunk();
+        self.write(chunk).await?;
+        buf.advance(chunk.len());
         Ok(())
     }
 
-    fn priority(&mut self, order: i32) -> Result<(), Self::Error> {
-        Reflect::set(&self.inner, &"sendOrder".into(), &order.into())?;
+    async fn close(&mut self, code: u32) -> Result<(), Self::Error> {
+        let reason = code.into();
+        JsFuture::from(self.writer.abort_with_reason(&reason)).await?;
+        Ok(())
+    }
+
+    async fn priority(&mut self, order: i32) -> Result<(), Self::Error> {
+        Reflect::set(&self.writer, &"sendOrder".into(), &order.into())?;
         Ok(())
     }
 }
 
 impl Drop for SendStream {
     fn drop(&mut self) {
-        let _ = self.inner.close();
+        let _ = self.writer.close();
     }
 }

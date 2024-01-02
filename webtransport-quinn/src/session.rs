@@ -11,7 +11,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, Stream, StreamExt};
 
-use crate::{Connect, RecvStream, SendStream, SessionError, Settings, WebTransportError};
+use crate::{Connect, RecvStream, SendStream, Settings};
 
 use webtransport_proto::{Frame, StreamUni, VarInt};
 
@@ -414,7 +414,7 @@ impl webtransport_generic::Session for Session {
     type RecvStream = RecvStream;
     type Error = SessionError;
 
-    async fn accept_uni(&mut self) -> Result<Self::RecvStream, Self::Error> {
+    async fn accept_uni(&mut self) -> anyhow::Result<Self::RecvStream, Self::Error> {
         Self::accept_uni(self).await
     }
 
@@ -441,4 +441,30 @@ impl webtransport_generic::Session for Session {
     async fn closed(&self) -> Self::Error {
         Self::closed(self).await
     }
+}
+
+/// An errors returned by [`crate::Session`], split based on if they are underlying QUIC errors or WebTransport errors.
+#[derive(Clone, thiserror::Error, Debug)]
+pub enum SessionError {
+    #[error("connection error: {0}")]
+    ConnectionError(#[from] quinn::ConnectionError),
+
+    #[error("webtransport error: {0}")]
+    WebTransportError(#[from] WebTransportError),
+
+    #[error("send datagram error: {0}")]
+    SendDatagramError(#[from] quinn::SendDatagramError),
+}
+
+/// An error that can occur when reading/writing the WebTransport stream header.
+#[derive(Clone, thiserror::Error, Debug)]
+pub enum WebTransportError {
+    #[error("unknown session")]
+    UnknownSession,
+
+    #[error("read error: {0}")]
+    ReadError(#[from] quinn::ReadExactError),
+
+    #[error("write error: {0}")]
+    WriteError(#[from] quinn::WriteError),
 }

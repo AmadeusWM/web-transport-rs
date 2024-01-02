@@ -4,9 +4,8 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::Bytes;
-
-use crate::{StoppedError, StreamClosed, WriteError};
+use crate::SessionError;
+use bytes::{Buf, Bytes};
 
 /// A stream that can be used to send bytes. See [`quinn::SendStream`].
 ///
@@ -103,15 +102,80 @@ impl tokio::io::AsyncWrite for SendStream {
 impl webtransport_generic::SendStream for SendStream {
     type Error = WriteError;
 
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        SendStream::write(self, buf).await.map_err(Into::into)
+    async fn write<B: Buf>(&mut self, buf: &mut B) -> Result<(), Self::Error> {
+        let n = SendStream::write(self, buf.chunk()).await?;
+        buf.advance(n);
+        Ok(())
     }
 
-    async fn reset(&mut self, code: u32) -> Result<(), Self::Error> {
+    async fn close(&mut self, code: u32) -> Result<(), Self::Error> {
         SendStream::reset(self, code).map_err(|_| WriteError::Closed)
     }
 
-    fn priority(&mut self, order: i32) -> Result<(), Self::Error> {
+    async fn priority(&mut self, order: i32) -> Result<(), Self::Error> {
         SendStream::set_priority(self, order).map_err(|_| WriteError::Closed)
+    }
+}
+
+/// An error when writing to [`crate::SendStream`]. Similar to [`quinn::WriteError`].
+#[derive(Clone, thiserror::Error, Debug)]
+pub enum WriteError {
+    #[error("STOP_SENDING: {0}")]
+    Stopped(u32),
+
+    #[error("invalid STOP_SENDING: {0}")]
+    InvalidStopped(quinn::VarInt),
+
+    #[error("session error: {0}")]
+    SessionError(#[from] SessionError),
+
+    #[error("stream closed")]
+    Closed,
+}
+
+impl From<quinn::WriteError> for WriteError {
+    fn from(e: quinn::WriteError) -> Self {
+        match e {
+            quinn::WriteError::Stopped(code) => {
+                match webtransport_proto::error_from_http3(code.into_inner()) {
+                    Some(code) => WriteError::Stopped(code),
+                    None => WriteError::InvalidStopped(code),
+                }
+            }
+            quinn::WriteError::UnknownStream => WriteError::Closed,
+            quinn::WriteError::ConnectionLost(e) => WriteError::SessionError(e.into()),
+            quinn::WriteError::ZeroRttRejected => unreachable!("0-RTT not supported"),
+        }
+    }
+}
+
+/// An error indicating the stream was already closed. Same as [`quinn::UnknownStream`] but a less confusing name.
+#[derive(Clone, thiserror::Error, Debug)]
+#[error("stream closed")]
+pub struct StreamClosed;
+
+impl From<quinn::UnknownStream> for StreamClosed {
+    fn from(_: quinn::UnknownStream) -> Self {
+        StreamClosed
+    }
+}
+
+/// An error returned by [`crate::SendStream::stopped`]. Similar to [`quinn::StoppedError`].
+#[derive(Clone, thiserror::Error, Debug)]
+pub enum StoppedError {
+    #[error("session error: {0}")]
+    SessionError(#[from] SessionError),
+
+    #[error("stream already closed")]
+    Closed,
+}
+
+impl From<quinn::StoppedError> for StoppedError {
+    fn from(e: quinn::StoppedError) -> Self {
+        match e {
+            quinn::StoppedError::ConnectionLost(e) => StoppedError::SessionError(e.into()),
+            quinn::StoppedError::UnknownStream => StoppedError::Closed,
+            quinn::StoppedError::ZeroRttRejected => unreachable!("0-RTT not supported"),
+        }
     }
 }

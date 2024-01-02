@@ -1,5 +1,3 @@
-use crate::ErrorCode;
-
 use super::{RecvStream, SendStream};
 
 /// Trait representing a WebTransport session.
@@ -10,7 +8,7 @@ use super::{RecvStream, SendStream};
 pub trait Session: Clone {
     type SendStream: SendStream;
     type RecvStream: RecvStream;
-    type Error: ErrorCode;
+    type Error: std::error::Error;
 
     async fn accept_uni(&mut self) -> Result<Self::RecvStream, Self::Error>;
     async fn accept_bi(&mut self) -> Result<(Self::SendStream, Self::RecvStream), Self::Error>;

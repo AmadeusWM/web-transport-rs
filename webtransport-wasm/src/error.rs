@@ -27,8 +27,10 @@ impl fmt::Display for WebError {
     }
 }
 
-impl webtransport_generic::ErrorCode for WebError {
-    fn code(&self) -> Option<u32> {
-        None
+impl From<&str> for WebError {
+    fn from(value: &str) -> Self {
+        Self {
+            value: value.into(),
+        }
     }
 }

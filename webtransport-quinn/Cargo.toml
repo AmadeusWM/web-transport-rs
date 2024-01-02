@@ -27,9 +27,9 @@ futures = "0.3"
 async-std = "1"
 url = "2"
 log = "0.4"
+anyhow = "1"
 
-# This is just for AsyncRead/AsyncWrite and does NOT pull in anything else
-tokio = "1"
+tokio = { version = "1", default-features = false }
 
 [dev-dependencies]
 anyhow = "1"

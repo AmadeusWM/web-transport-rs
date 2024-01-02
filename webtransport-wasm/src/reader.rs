@@ -5,32 +5,30 @@ use web_sys::{ReadableStream, ReadableStreamDefaultReader, ReadableStreamReadRes
 
 use crate::WebError;
 
-// Wrapper around ReadableStream which drops the lock on close.
 pub struct Reader {
     inner: ReadableStreamDefaultReader,
 }
 
 impl Reader {
-    pub fn new(stream: &ReadableStream) -> Result<Self, WebError> {
-        let inner = stream.get_reader().dyn_into().unwrap();
+    pub fn new(stream: ReadableStream) -> Result<Self, WebError> {
+        let inner = stream.get_reader().unchecked_into();
         Ok(Self { inner })
     }
 
     pub async fn read<T: JsCast>(&mut self) -> Result<Option<T>, WebError> {
-        let result: ReadableStreamReadResult =
-            JsFuture::from(self.inner.read()).await?.dyn_into()?;
+        let result: ReadableStreamReadResult = JsFuture::from(self.inner.read()).await?.into();
 
         if Reflect::get(&result, &"done".into())?.is_truthy() {
             return Ok(None);
         }
 
-        let result = Reflect::get(&result, &"value".into())?.dyn_into()?;
-        Ok(Some(result))
+        let res = Reflect::get(&result, &"value".into())?.dyn_into()?;
+        Ok(Some(res))
     }
 }
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        self.inner.release_lock();
+        let _ = self.inner.release_lock();
     }
 }

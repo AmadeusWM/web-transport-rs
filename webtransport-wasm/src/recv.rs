@@ -1,23 +1,50 @@
 use std::cmp;
 
-use js_sys::Uint8Array;
+use bytes::{BufMut, Bytes};
+use js_sys::{Reflect, Uint8Array};
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::WebTransportReceiveStream;
+use web_sys::{ReadableStreamDefaultReader, ReadableStreamReadResult, WebTransportReceiveStream};
 
-use crate::{Reader, WebError};
+use crate::WebError;
 
 pub struct RecvStream {
-    inner: WebTransportReceiveStream,
-    reader: Reader,
-    buf: Vec<u8>,
+    reader: ReadableStreamDefaultReader,
+    buffer: Bytes,
 }
 
-impl From<WebTransportReceiveStream> for RecvStream {
-    fn from(inner: WebTransportReceiveStream) -> Self {
-        let reader = Reader::new(&inner).unwrap();
-        let buf = Vec::new();
+impl RecvStream {
+    pub fn new(stream: WebTransportReceiveStream) -> Result<Self, WebError> {
+        if stream.locked() {
+            return Err("locked".into());
+        }
 
-        RecvStream { inner, reader, buf }
+        let reader = stream.get_reader().unchecked_into();
+
+        Ok(Self {
+            reader,
+            buffer: Bytes::new(),
+        })
+    }
+
+    async fn read_chunk(&mut self, max: usize) -> Result<Bytes, WebError> {
+        // Check if we need to read more data into the buffer.
+        if self.buffer.len() == 0 {
+            let result: ReadableStreamReadResult =
+                JsFuture::from(self.reader.read()).await?.dyn_into()?;
+
+            if Reflect::get(&result, &"done".into())?.is_truthy() {
+                return Ok(Bytes::new()); // EOF
+            }
+
+            let result: Uint8Array = Reflect::get(&result, &"value".into())?.dyn_into()?;
+
+            // TODO check if we're making a memory copy here
+            self.buffer = result.to_vec().into();
+        }
+
+        let res = self.buffer.split_to(cmp::min(max, self.buffer.len()));
+        Ok(res)
     }
 }
 
@@ -25,38 +52,25 @@ impl From<WebTransportReceiveStream> for RecvStream {
 impl webtransport_generic::RecvStream for RecvStream {
     type Error = WebError;
 
-    async fn read(&mut self, buf: &mut [u8]) -> Result<Option<usize>, Self::Error> {
-        if buf.is_empty() {
-            return Ok(Some(0));
-        }
-
-        // Read more data into the internal buffer.
-        // TODO use BYOB reader to avoid this when WebWorker support lands
-        if self.buf.is_empty() {
-            let data: Option<Uint8Array> = self.reader.read().await?;
-            self.buf = match data {
-                Some(data) => data.to_vec(),
-                None => return Ok(None),
-            };
-        }
-
-        // Return as much data as we can from the internal buffer.
-        let size = cmp::min(buf.len(), self.buf.len());
-        buf[..size].copy_from_slice(&self.buf[..size]);
-        self.buf.drain(..size);
-
-        Ok(Some(size))
+    async fn read<B: BufMut>(&mut self, buf: &mut B) -> Result<(), Self::Error> {
+        let chunk = self.read_chunk(buf.remaining_mut()).await?;
+        buf.put(chunk);
+        Ok(())
     }
 
-    async fn stop(&mut self, _code: u32) -> Result<(), Self::Error> {
-        // TODO WebTransport doesn't support error codes?
-        JsFuture::from(self.inner.cancel()).await?;
+    async fn read_chunk(&mut self, max: usize) -> Result<Bytes, Self::Error> {
+        self.read_chunk(max).await
+    }
+
+    async fn close(&mut self, code: u32) -> Result<(), Self::Error> {
+        let code = code.into();
+        JsFuture::from(self.reader.cancel_with_reason(&code)).await?;
         Ok(())
     }
 }
 
 impl Drop for RecvStream {
     fn drop(&mut self) {
-        let _ = self.inner.cancel();
+        let _ = self.reader.cancel();
     }
 }
