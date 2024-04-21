@@ -80,6 +80,11 @@ impl SendStream {
     pub fn reset(mut self, code: u32) {
         self.0.reset(code).ok();
     }
+
+    /// Wait until all of the data has been written to the stream.
+    pub async fn finish(&mut self) -> Result<(), WriteError>  {
+        self.0.finish().await
+    }
 }
 
 pub struct RecvStream(web_transport_quinn::RecvStream);
